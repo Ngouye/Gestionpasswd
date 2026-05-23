@@ -103,15 +103,15 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
-      # On récupère le code pour avoir accès aux manifestes Kubernetes du dossier k8s
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Démarrage de l'agent SSH avec ta clé privée
-      - name: Start SSH agent
-        uses: webfactory/ssh-agent@v0.8.1
-        with:
-          ssh-private-key: ${{ secrets.VPS_PRIVATE_KEY }}
+      # Configuration manuelle et robuste de SSH (Évite les bugs d'extensions de l'API GitHub)
+      - name: Configure SSH Private Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
 
       # Étape de déploiement à l'intérieur du VPS
       - name: Execute remote deployment commands
@@ -122,14 +122,13 @@ jobs:
           BACKEND_IMAGE: ${{ needs.build-and-push.outputs.backend_image }}
           FRONTEND_IMAGE: ${{ needs.build-and-push.outputs.frontend_image }}
         run: |
-          # 1. On envoie d'abord les fichiers de configuration Kubernetes mis à jour sur le VPS
-          # Les drapeaux SSH évitent que le runner ne bloque sur la validation d'hôte (Fingerprint)
-          rsync -avz -e "ssh -p $VPS_SSH_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+          # 1. Envoi des manifestes Kubernetes via rsync en utilisant la clé configurée
+          rsync -avz -e "ssh -i ~/.ssh/id_ed25519 -p $VPS_SSH_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
             ./k8s/ \
             $VPS_USER@$VPS_HOST:~/gestionmotpasse/k8s/
 
-          # 2. On se connecte en SSH pour appliquer les changements localement sur le VPS
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $VPS_SSH_PORT $VPS_USER@$VPS_HOST << EOF
+          # 2. Connexion SSH pour appliquer les changements sur le VPS sous l'utilisateur ngouye
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $VPS_SSH_PORT $VPS_USER@$VPS_HOST << EOF
             set -e
             cd ~/gestionmotpasse/k8s/
           
