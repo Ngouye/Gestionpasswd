@@ -38,7 +38,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Node.js 20
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v4
         with:
           node-version: 20
 
@@ -75,21 +75,21 @@ jobs:
           echo "frontend_image=${REGISTRY}/${USERNAME}/gestionmotpasse-frontend:latest" >> $GITHUB_OUTPUT
 
       - name: Log in to Docker registry
-        uses: docker/login-action@v5
+        uses: docker/login-action@v3
         with:
           registry: docker.io
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Build and push backend image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v3
         with:
           context: ./backend
           push: true
           tags: ${{ steps.meta.outputs.backend_image }}
 
       - name: Build and push frontend image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v3
         with:
           context: ./frontend
           push: true
@@ -106,7 +106,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Configuration manuelle et robuste de SSH (Évite les bugs d'extensions de l'API GitHub)
+      # Configuration manuelle et robuste de SSH
       - name: Configure SSH Private Key
         run: |
           mkdir -p ~/.ssh
@@ -122,12 +122,12 @@ jobs:
           BACKEND_IMAGE: ${{ needs.build-and-push.outputs.backend_image }}
           FRONTEND_IMAGE: ${{ needs.build-and-push.outputs.frontend_image }}
         run: |
-          # 1. Envoi des manifestes Kubernetes via rsync en utilisant la clé configurée
+          # 1. Envoi des manifestes Kubernetes via rsync
           rsync -avz -e "ssh -i ~/.ssh/id_ed25519 -p $VPS_SSH_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
             ./k8s/ \
             $VPS_USER@$VPS_HOST:~/gestionmotpasse/k8s/
 
-          # 2. Connexion SSH pour appliquer les changements sur le VPS sous l'utilisateur ngouye
+          # 2. Connexion SSH pour appliquer les changements sur le VPS
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $VPS_SSH_PORT $VPS_USER@$VPS_HOST << EOF
             set -e
             cd ~/gestionmotpasse/k8s/
