@@ -2,15 +2,14 @@ package com.example.gestionmotpasse;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
-import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.test.context.ActiveProfiles;
 
 @SpringBootTest
-@EnableAutoConfiguration(exclude = {DataSourceAutoConfiguration.class})
-class GestionMotPasseApplicationTests {
+@ActiveProfiles("test") // Cette ligne dit à Spring d'utiliser le fichier application-test.properties
+public class GestionMotPasseApplicationTests {
 
     @Test
     void contextLoads() {
-        // Ce test reste vide, il sert juste à vérifier le démarrage sans BDD
+        // Le contexte va se charger avec la fausse base H2 en mémoire !
     }
 }
