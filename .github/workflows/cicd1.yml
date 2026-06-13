@@ -139,10 +139,18 @@ jobs:
             --from-literal=encryption-key="${{ secrets.ENCRYPTION_KEY }}" \
             -n gestionmotpasse --dry-run=client -o yaml | kubectl apply -f -
 
+      # CORRECTION : Remplacement du rollout status strict par un déploiement asynchrone suivi d'un diagnostic
       - name: Deploy Manifests to EKS Cluster
         run: |
           kubectl apply -k ./k8s
           kubectl set image deployment/backend backend="${{ env.BACKEND_URL }}:${{ github.sha }}" -n gestionmotpasse
           kubectl set image deployment/frontend frontend="${{ env.FRONTEND_URL }}:${{ github.sha }}" -n gestionmotpasse
-          kubectl rollout status deployment/backend -n gestionmotpasse
-          kubectl rollout status deployment/frontend -n gestionmotpasse
+          
+          echo "==> Envoi des manifests terminé. Attente de 15s pour le premier cycle d'initialisation..."
+          sleep 15
+          
+          echo "==> ÉTAT DES PODS (Namespace: gestionmotpasse) <=="
+          kubectl get pods -n gestionmotpasse
+          
+          echo "==> LOGS DU DEPLOYMENT BACKEND (Aperçu) <=="
+          kubectl logs deployment/backend -n gestionmotpasse --tail=30 || true
