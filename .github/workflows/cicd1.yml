@@ -51,19 +51,15 @@ jobs:
         run: npm test
 
   # ==========================================================
-  # 3. JOB : DÉPLOIEMENT INFRASTRUCTURE AWS AVEC TERRAFORM
+  # 3. JOB UNIQUE : TERRAFORM + BUILD/PUSH + DEPLOY
   # ==========================================================
-  terraform-apply:
-    name: Terraform Apply AWS Infrastructure
+  delivery-and-deployment:
+    name: AWS Infrastructure & Application Deployment
     needs:
       - backend-unit-tests
       - frontend-unit-tests
     runs-on: ubuntu-latest
     environment: production
-    outputs:
-      backend_repository_url: ${{ steps.tf_outputs.outputs.backend_repository_url }}
-      frontend_repository_url: ${{ steps.tf_outputs.outputs.frontend_repository_url }}
-      cluster_name: ${{ steps.tf_outputs.outputs.cluster_name }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -79,10 +75,18 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.7.0
-          # CORRECTION CRUCIALE : Désactive le wrapper pour que 'terraform output -raw' renvoie du texte brut exploitable
           terraform_wrapper: false
 
-      - name: Terraform init
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+
+      - name: Terraform Init & Apply
         working-directory: terraform
         env:
           AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
@@ -93,111 +97,39 @@ jobs:
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="key=${{ secrets.TF_STATE_KEY }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_DYNAMODB_TABLE }}"
-
-      - name: Terraform format check (Cosmetic)
-        working-directory: terraform
-        run: terraform fmt -check
-        continue-on-error: true
-
-      - name: Terraform validate (Syntax)
-        working-directory: terraform
-        run: terraform validate
-
-      - name: Terraform apply
-        id: tf_apply
-        working-directory: terraform
-        run: |
+          terraform validate
           terraform apply -auto-approve
 
-      - name: Export Terraform outputs
-        id: tf_outputs
+      # Extraction des variables d'environnement locales en direct du State
+      - name: Load Infrastructure Context
+        id: infra
         working-directory: terraform
         run: |
-          echo "backend_repository_url=$(terraform output -raw backend_repository_url)" >> $GITHUB_OUTPUT
-          echo "frontend_repository_url=$(terraform output -raw frontend_repository_url)" >> $GITHUB_OUTPUT
-          echo "cluster_name=$(terraform output -raw cluster_name)" >> $GITHUB_OUTPUT
+          echo "BACKEND_URL=$(terraform output -raw backend_repository_url)" >> $GITHUB_ENV
+          echo "FRONTEND_URL=$(terraform output -raw frontend_repository_url)" >> $GITHUB_ENV
+          echo "CLUSTER_NAME=$(terraform output -raw cluster_name)" >> $GITHUB_ENV
 
-  # ==========================================================
-  # 4. JOB : BUILD ET PUSH DES IMAGES DOCKER VERS AWS ECR
-  # ==========================================================
-  build-and-push:
-    name: Build and Push Docker Images
-    needs:
-      - terraform-apply
-    runs-on: ubuntu-latest
-    outputs:
-      backend_image: ${{ steps.meta.outputs.backend_image }}
-      frontend_image: ${{ steps.meta.outputs.frontend_image }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v3
-        with:
-          aws-region: ${{ secrets.AWS_REGION }}
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Define Image Tags
-        id: meta
-        run: |
-          BACKEND_IMAGE="${{ needs.terraform-apply.outputs.backend_repository_url }}:latest"
-          FRONTEND_IMAGE="${{ needs.terraform-apply.outputs.frontend_repository_url }}:latest"
-          echo "backend_image=$BACKEND_IMAGE" >> $GITHUB_OUTPUT
-          echo "frontend_image=$FRONTEND_IMAGE" >> $GITHUB_OUTPUT
-
-      # CORRECTION CRUCIALE : Utilisation de l'action officielle d'AWS pour une connexion Docker fiable
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push backend image
+      - name: Build and Push Applications to ECR
         run: |
-          docker build -t "${{ needs.terraform-apply.outputs.backend_repository_url }}:latest" ./backend
-          docker push "${{ needs.terraform-apply.outputs.backend_repository_url }}:latest"
+          # Build & Push Backend
+          docker build -t ${{ env.BACKEND_URL }}:latest -t ${{ env.BACKEND_URL }}:${{ github.sha }} ./backend
+          docker push ${{ env.BACKEND_URL }}:latest
+          docker push ${{ env.BACKEND_URL }}:${{ github.sha }}
+          
+          # Build & Push Frontend
+          docker build -t ${{ env.FRONTEND_URL }}:latest -t ${{ env.FRONTEND_URL }}:${{ github.sha }} ./frontend
+          docker push ${{ env.FRONTEND_URL }}:latest
+          docker push ${{ env.FRONTEND_URL }}:${{ github.sha }}
 
-      - name: Build and push frontend image
+      - name: Configure kubectl Context
         run: |
-          docker build -t "${{ needs.terraform-apply.outputs.frontend_repository_url }}:latest" ./frontend
-          docker push "${{ needs.terraform-apply.outputs.frontend_repository_url }}:latest"
+          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name "${{ env.CLUSTER_NAME }}"
 
-  # ==========================================================
-  # 5. JOB : DÉPLOIEMENT SUR EKS AVEC KUBECTL
-  # ==========================================================
-  deploy:
-    name: Deploy to AWS EKS
-    needs:
-      - terraform-apply
-      - build-and-push
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v3
-        with:
-          aws-region: ${{ secrets.AWS_REGION }}
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
-      - name: Install kubectl
-        run: |
-          curl -LO "https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
-
-      - name: Configure kubectl for EKS cluster
-        run: |
-          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name "${{ needs.terraform-apply.outputs.cluster_name }}"
-
-      - name: Create Kubernetes secrets
-        env:
-          ALB_CERTIFICATE_ARN: ${{ secrets.ALB_CERTIFICATE_ARN }}
+      - name: Create Kubernetes Secrets & Namespaces
         run: |
           kubectl create namespace gestionmotpasse --dry-run=client -o yaml | kubectl apply -f -
           kubectl create secret generic postgres-secret \
@@ -207,10 +139,10 @@ jobs:
             --from-literal=encryption-key="${{ secrets.ENCRYPTION_KEY }}" \
             -n gestionmotpasse --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Apply Kubernetes manifests
+      - name: Deploy Manifests to EKS Cluster
         run: |
           kubectl apply -k ./k8s
-          kubectl set image deployment/backend backend="${{ needs.build-and-push.outputs.backend_image }}" -n gestionmotpasse
-          kubectl set image deployment/frontend frontend="${{ needs.build-and-push.outputs.frontend_image }}" -n gestionmotpasse
+          kubectl set image deployment/backend backend="${{ env.BACKEND_URL }}:${{ github.sha }}" -n gestionmotpasse
+          kubectl set image deployment/frontend frontend="${{ env.FRONTEND_URL }}:${{ github.sha }}" -n gestionmotpasse
           kubectl rollout status deployment/backend -n gestionmotpasse
           kubectl rollout status deployment/frontend -n gestionmotpasse
