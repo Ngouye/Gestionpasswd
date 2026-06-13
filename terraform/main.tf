@@ -120,10 +120,33 @@ resource "helm_release" "aws_load_balancer_controller" {
   version          = var.lb_controller_chart_version
   depends_on       = [module.eks]
 
-  set { name = "clusterName"; value = module.eks.cluster_name }
-  set { name = "serviceAccount.create"; value = "true" }
-  set { name = "serviceAccount.name"; value = "aws-load-balancer-controller" }
-  set { name = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"; value = aws_iam_role.aws_load_balancer_controller.arn }
-  set { name = "region"; value = var.aws_region }
-  set { name = "vpcId"; value = module.vpc.vpc_id }
+  set {
+    name  = "clusterName"
+    value = module.eks.cluster_name
+  }
+
+  set {
+    name  = "serviceAccount.create"
+    value = "true"
+  }
+
+  set {
+    name  = "serviceAccount.name"
+    value = "aws-load-balancer-controller"
+  }
+
+  set {
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = aws_iam_role.aws_load_balancer_controller.arn
+  }
+
+  set {
+    name  = "region"
+    value = var.aws_region
+  }
+
+  set {
+    name  = "vpcId"
+    value = module.vpc.vpc_id
+  }
 }
