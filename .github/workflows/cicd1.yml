@@ -60,6 +60,10 @@ jobs:
       - frontend-unit-tests
     runs-on: ubuntu-latest
     environment: production
+    outputs:
+      backend_repository_url: ${{ steps.tf_outputs.outputs.backend_repository_url }}
+      frontend_repository_url: ${{ steps.tf_outputs.outputs.frontend_repository_url }}
+      cluster_name: ${{ steps.tf_outputs.outputs.cluster_name }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -71,14 +75,10 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-      - name: Install Terraform
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y unzip wget
-          wget https://releases.hashicorp.com/terraform/1.7.6/terraform_1.7.6_linux_amd64.zip
-          unzip terraform_1.7.6_linux_amd64.zip
-          sudo mv terraform /usr/local/bin/
-          terraform version
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
 
       - name: Terraform init and validate
         working-directory: terraform
@@ -163,6 +163,7 @@ jobs:
   deploy:
     name: Deploy to AWS EKS
     needs:
+      - terraform-apply
       - build-and-push
     runs-on: ubuntu-latest
     steps:
