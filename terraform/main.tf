@@ -46,7 +46,7 @@ module "vpc" {
 }
 
 # ==========================================================
-# CLUSTER : EKS
+# CLUSTER : EKS (VERSION v19.x ALIGNÉE ET SÉCURISÉE)
 # ==========================================================
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
@@ -66,6 +66,9 @@ module "eks" {
       max_size       = var.node_group_max_capacity
       min_size       = var.node_group_min_capacity
       instance_types = [var.node_group_instance_type]
+
+      # CORRECTION : Type d'AMI explicitement défini pour la compatibilité EKS 1.29
+      ami_type       = "AL2_x86_64"
 
       iam_role_additional_policies = {
         AmazonEC2ContainerRegistryReadOnly = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
