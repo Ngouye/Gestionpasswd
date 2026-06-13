@@ -1,4 +1,4 @@
-name: CI/CD Deploy VPS (Kubernetes via SSH)
+name: CI/CD Deploy AWS EKS via Terraform
 
 on:
   push:
@@ -51,13 +51,63 @@ jobs:
         run: npm test
 
   # ==========================================================
-  # 3. JOB : BUILD ET PUSH DES IMAGES DOCKER
+  # 3. JOB : DÉPLOIEMENT INFRASTRUCTURE AWS AVEC TERRAFORM
+  # ==========================================================
+  terraform-apply:
+    name: Terraform Apply AWS Infrastructure
+    needs:
+      - backend-unit-tests
+      - frontend-unit-tests
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-region: ${{ secrets.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.7.7
+
+      - name: Terraform init and validate
+        working-directory: terraform
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ secrets.TF_STATE_KEY }}" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_DYNAMODB_TABLE }}"
+          terraform fmt -check
+          terraform validate
+
+      - name: Terraform apply
+        id: tf_apply
+        working-directory: terraform
+        run: |
+          terraform apply -auto-approve
+
+      - name: Export Terraform outputs
+        id: tf_outputs
+        working-directory: terraform
+        run: |
+          echo "backend_repository_url=$(terraform output -raw backend_repository_url)" >> $GITHUB_OUTPUT
+          echo "frontend_repository_url=$(terraform output -raw frontend_repository_url)" >> $GITHUB_OUTPUT
+          echo "cluster_name=$(terraform output -raw cluster_name)" >> $GITHUB_OUTPUT
+
+  # ==========================================================
+  # 4. JOB : BUILD ET PUSH DES IMAGES DOCKER VERS AWS ECR
   # ==========================================================
   build-and-push:
     name: Build and Push Docker Images
     needs:
-      - backend-unit-tests
-      - frontend-unit-tests
+      - terraform-apply
     runs-on: ubuntu-latest
     outputs:
       backend_image: ${{ steps.meta.outputs.backend_image }}
@@ -66,80 +116,88 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-region: ${{ secrets.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Define Image Tags
         id: meta
         run: |
-          REGISTRY="docker.io"
-          USERNAME="${{ secrets.DOCKER_USERNAME }}"
-          echo "backend_image=${REGISTRY}/${USERNAME}/gestionmotpasse-backend:latest" >> $GITHUB_OUTPUT
-          echo "frontend_image=${REGISTRY}/${USERNAME}/gestionmotpasse-frontend:latest" >> $GITHUB_OUTPUT
+          BACKEND_IMAGE="${{ needs.terraform-apply.outputs.backend_repository_url }}:latest"
+          FRONTEND_IMAGE="${{ needs.terraform-apply.outputs.frontend_repository_url }}:latest"
+          echo "backend_image=$BACKEND_IMAGE" >> $GITHUB_OUTPUT
+          echo "frontend_image=$FRONTEND_IMAGE" >> $GITHUB_OUTPUT
 
-      - name: Log in to Docker registry
-        uses: docker/login-action@v3
-        with:
-          registry: docker.io
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Login to Amazon ECR
+        run: |
+          BACKEND_REGISTRY=$(echo "${{ needs.terraform-apply.outputs.backend_repository_url }}" | cut -d'/' -f1)
+          FRONTEND_REGISTRY=$(echo "${{ needs.terraform-apply.outputs.frontend_repository_url }}" | cut -d'/' -f1)
+          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin "$BACKEND_REGISTRY"
+          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin "$FRONTEND_REGISTRY"
 
       - name: Build and push backend image
-        uses: docker/build-push-action@v3
-        with:
-          context: ./backend
-          push: true
-          tags: ${{ steps.meta.outputs.backend_image }}
+        run: |
+          docker build -t backend-image ./backend
+          docker tag backend-image "${{ needs.terraform-apply.outputs.backend_repository_url }}:latest"
+          docker push "${{ needs.terraform-apply.outputs.backend_repository_url }}:latest"
 
       - name: Build and push frontend image
-        uses: docker/build-push-action@v3
-        with:
-          context: ./frontend
-          push: true
-          tags: ${{ steps.meta.outputs.frontend_image }}
+        run: |
+          docker build -t frontend-image ./frontend
+          docker tag frontend-image "${{ needs.terraform-apply.outputs.frontend_repository_url }}:latest"
+          docker push "${{ needs.terraform-apply.outputs.frontend_repository_url }}:latest"
 
   # ==========================================================
-  # 4. JOB : DÉPLOIEMENT VIA TUNNEL SSH SUR LE VPS
+  # 5. JOB : DÉPLOIEMENT SUR EKS AVEC KUBECTL
   # ==========================================================
   deploy:
-    name: Deploy to VPS via SSH
-    needs: build-and-push
+    name: Deploy to AWS EKS
+    needs:
+      - build-and-push
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Configuration manuelle et robuste de SSH
-      - name: Configure SSH Private Key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.VPS_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-region: ${{ secrets.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-      # Étape de déploiement à l'intérieur du VPS
-      - name: Execute remote deployment commands
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+
+      - name: Configure kubectl for EKS cluster
+        run: |
+          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name "${{ needs.terraform-apply.outputs.cluster_name }}"
+
+      - name: Create Kubernetes secrets
         env:
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT || '22' }}
-          BACKEND_IMAGE: ${{ needs.build-and-push.outputs.backend_image }}
-          FRONTEND_IMAGE: ${{ needs.build-and-push.outputs.frontend_image }}
+          ALB_CERTIFICATE_ARN: ${{ secrets.ALB_CERTIFICATE_ARN }}
         run: |
-          # 1. Envoi des manifestes Kubernetes via rsync
-          rsync -avz -e "ssh -i ~/.ssh/id_ed25519 -p $VPS_SSH_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
-            ./k8s/ \
-            $VPS_USER@$VPS_HOST:~/gestionmotpasse/k8s/
+          kubectl create namespace gestionmotpasse --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret generic postgres-secret \
+            --from-literal=postgres-username="${{ secrets.POSTGRES_USERNAME }}" \
+            --from-literal=postgres-password="${{ secrets.POSTGRES_PASSWORD }}" \
+            --from-literal=jwt-secret="${{ secrets.JWT_SECRET }}" \
+            --from-literal=encryption-key="${{ secrets.ENCRYPTION_KEY }}" \
+            -n gestionmotpasse --dry-run=client -o yaml | kubectl apply -f -
 
-          # 2. Connexion SSH pour appliquer les changements sur le VPS
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $VPS_SSH_PORT $VPS_USER@$VPS_HOST << EOF
-            set -e
-            cd ~/gestionmotpasse/k8s/
-          
-            echo "☸️ Application des manifestes Kubernetes sur le VPS..."
-            kubectl apply -k .
-          
-            echo "🔄 Injection des nouvelles images..."
-            kubectl set image deployment/backend backend=${BACKEND_IMAGE} -n gestionmotpasse
-            kubectl set image deployment/frontend frontend=${FRONTEND_IMAGE} -n gestionmotpasse
-          
-            echo "⏳ Validation du déploiement..."
-            kubectl rollout status deployment/backend -n gestionmotpasse
-            kubectl rollout status deployment/frontend -n gestionmotpasse
-          EOF
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -k ./k8s
+          kubectl set image deployment/backend backend="${{ needs.build-and-push.outputs.backend_image }}" -n gestionmotpasse
+          kubectl set image deployment/frontend frontend="${{ needs.build-and-push.outputs.frontend_image }}" -n gestionmotpasse
+          kubectl rollout status deployment/backend -n gestionmotpasse
+          kubectl rollout status deployment/frontend -n gestionmotpasse

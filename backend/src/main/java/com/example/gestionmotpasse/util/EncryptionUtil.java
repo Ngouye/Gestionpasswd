@@ -1,6 +1,7 @@
 package com.example.gestionmotpasse.util;
 
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Base64;
 
@@ -24,7 +25,7 @@ public class EncryptionUtil {
             System.arraycopy(iv, 0, combined, 0, iv.length);
             System.arraycopy(encrypted, 0, combined, iv.length, encrypted.length);
             return Base64.getEncoder().encodeToString(combined);
-        } catch (Exception e) {
+        } catch (GeneralSecurityException | IllegalArgumentException e) {
             throw new RuntimeException("Erreur d'encryption", e);
         }
     }
@@ -42,7 +43,7 @@ public class EncryptionUtil {
             cipher.init(Cipher.DECRYPT_MODE, keySpec, ivSpec);
             byte[] original = cipher.doFinal(encrypted);
             return new String(original, StandardCharsets.UTF_8);
-        } catch (Exception e) {
+        } catch (GeneralSecurityException | IllegalArgumentException e) {
             throw new RuntimeException("Erreur de décryption", e);
         }
     }

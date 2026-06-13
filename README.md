@@ -40,79 +40,85 @@ Le frontend écoute sur `http://localhost:3000` et utilise un proxy vers le back
 
 Un guide Docker existe dans `docker/README.md` pour expliquer l’architecture, la construction des images et l’utilisation de `docker compose`.
 
-## Déploiement AWS EC2
+## Déploiement AWS avec Terraform
 
-Un workflow GitHub Actions est disponible dans `.github/workflows/deploy-ec2.yml`.
+Le projet inclut désormais un dossier `terraform/` pour créer l’infrastructure AWS via Terraform :
 
-Il synchronise le code vers votre instance EC2 et lance `docker compose up --build -d`.
+- ECR pour les images backend et frontend
+- VPC et sous-réseaux
+- EKS pour le cluster Kubernetes
 
-Un guide AWS plus complet est disponible dans `aws/README.md`.
+Le workflow GitHub Actions `cicd1.yml` exécute :
 
-### Secrets requis
+1. tests backend et frontend
+2. création de l’infrastructure Terraform
+3. build et push d’images Docker vers ECR
+4. déploiement sur EKS
 
-- `EC2_USER` : utilisateur SSH de l’instance EC2
-- `EC2_HOST` : adresse IP ou nom DNS de l’instance
-- `EC2_PRIVATE_KEY` : clé privée SSH pour se connecter à l’instance
-- `EC2_SSH_PORT` : port SSH (optionnel, par défaut `22`)
+Le cluster EKS attend un contrôleur Ingress AWS (AWS Load Balancer Controller) pour exposer l’application via un ALB.
 
-### Prérequis côté EC2
+Si vous n’avez pas de domaine, l’application peut être exposée en HTTP via le DNS public généré par l’ALB. Il n’est pas nécessaire d’avoir un certificat ACM tant que vous restez en HTTP.
 
-Sur l’instance EC2, il faut installer :
+Configuration requise :
 
-- `Docker Engine`
-- `Docker Compose` (`docker compose`)
-- ouvrir le port SSH
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_REGION`
+- `TF_STATE_BUCKET`
+- `TF_STATE_KEY`
+- `TF_STATE_DYNAMODB_TABLE`
+- `POSTGRES_USERNAME`
+- `POSTGRES_PASSWORD`
+- `JWT_SECRET`
+- `ENCRYPTION_KEY`
 
-Sur Ubuntu, vous pouvez installer rapidement :
+> `terraform/backend.tf` utilise un backend S3. Le workflow fournit les valeurs de bucket et DynamoDB depuis les secrets GitHub.
 
-```bash
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl gnupg lsb-release
-sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
-  | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-sudo apt-get update
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-```
+Un guide dédié se trouve dans `terraform/README.md`.
 
-Ensuite, vérifiez :
+### Utilisation locale
 
-```bash
-docker version
-docker compose version
-```
+1. Copier `terraform/terraform.tfvars.example` vers `terraform/terraform.tfvars`
+2. Ajuster les variables si besoin
+3. Exécuter depuis `terraform/` :
+   ```bash
+   terraform init -backend-config="bucket=<bucket-name>" \
+     -backend-config="key=<path>/gestionmotpasse.tfstate" \
+     -backend-config="region=<aws-region>" \
+     -backend-config="dynamodb_table=<dynamodb-table>"
+   terraform apply
+   ```
 
-> Aucune installation de Node.js ou Java n’est requise sur l’EC2 pour ce déploiement : les images Docker contiennent déjà toute l’application.
+4. Déployer ensuite sur EKS avec le workflow GitHub Actions ou manuellement.
 
 ## CI/CD avec GitHub Actions
 
-Le workflow GitHub Actions est défini dans `.github/workflows/deploy.yml`.
+Le workflow GitHub Actions actuel est défini dans `.github/workflows/cicd1.yml`.
 
 Il fait les étapes suivantes :
 
-- build du backend Spring Boot
-- build du frontend React
-- push des images Docker vers un registre
-- déploiement sur Kubernetes via `kubectl`
+- tests backend avec Maven
+- tests frontend avec Vitest
+- création de l’infrastructure AWS via Terraform
+- build et push d’images Docker vers ECR
+- déploiement sur EKS via `kubectl`
 
 ### Secrets requis
 
-- `DOCKER_USERNAME`
-- `DOCKER_PASSWORD`
-- `KUBE_CONFIG_DATA` (kubeconfig encodé en base64)
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_REGION`
+- `TF_STATE_BUCKET`
+- `TF_STATE_KEY`
+- `TF_STATE_DYNAMODB_TABLE`
+- `POSTGRES_USERNAME`
+- `POSTGRES_PASSWORD`
+- `JWT_SECRET`
+- `ENCRYPTION_KEY`
 
 ### Branche
 
 Le déploiement se déclenche sur `push` vers `main`.
-
-Le workflow exécute désormais :
-
-- tests backend avec Maven
-- tests frontend avec Vitest
-- build des images Docker
-- déploiement Kubernetes
 
 ## Fonctionnalités
 

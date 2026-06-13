@@ -36,6 +36,16 @@ spec:
                 secretKeyRef:
                   name: postgres-secret
                   key: postgres-password
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: jwt-secret
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: encryption-key
             - name: JAVA_OPTS
               value: "-Xmx512m"
           readinessProbe:
