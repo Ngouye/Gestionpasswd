@@ -4,9 +4,8 @@ output "cluster_name" {
 }
 
 output "cluster_endpoint" {
-  description = "EKS cluster endpoint.
-"
-  value = module.eks.cluster_endpoint
+  description = "EKS cluster endpoint."
+  value       = module.eks.cluster_endpoint
 }
 
 output "cluster_ca_certificate_authority_data" {
