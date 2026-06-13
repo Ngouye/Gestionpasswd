@@ -46,14 +46,14 @@ module "vpc" {
 }
 
 # ==========================================================
-# CLUSTER : EKS (VERSION v19.x ALIGNÉE ET SÉCURISÉE)
+# CLUSTER : EKS (VERSION 1.30 CORRIGÉE)
 # ==========================================================
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "~> 19.0"
 
   cluster_name    = var.cluster_name
-  cluster_version = "1.29"
+  cluster_version = "1.30" # Correction : Aligné sur la version active sur AWS
   vpc_id          = module.vpc.vpc_id
   subnet_ids      = module.vpc.private_subnets
 
@@ -66,8 +66,6 @@ module "eks" {
       max_size       = var.node_group_max_capacity
       min_size       = var.node_group_min_capacity
       instance_types = [var.node_group_instance_type]
-
-      # CORRECTION : Type d'AMI explicitement défini pour la compatibilité EKS 1.29
       ami_type       = "AL2_x86_64"
 
       iam_role_additional_policies = {
@@ -105,6 +103,9 @@ data "aws_iam_policy_document" "lb_controller_assume_role" {
 resource "aws_iam_role" "aws_load_balancer_controller" {
   name               = "${var.cluster_name}-lb-controller"
   assume_role_policy = data.aws_iam_policy_document.lb_controller_assume_role.json
+
+  # Correction pour éviter les warnings "inline_policy deprecated"
+  inline_policy {}
 }
 
 # ==========================================================
@@ -119,33 +120,10 @@ resource "helm_release" "aws_load_balancer_controller" {
   version          = var.lb_controller_chart_version
   depends_on       = [module.eks]
 
-  set {
-    name  = "clusterName"
-    value = module.eks.cluster_name
-  }
-
-  set {
-    name  = "serviceAccount.create"
-    value = "true"
-  }
-
-  set {
-    name  = "serviceAccount.name"
-    value = "aws-load-balancer-controller"
-  }
-
-  set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = aws_iam_role.aws_load_balancer_controller.arn
-  }
-
-  set {
-    name  = "region"
-    value = var.aws_region
-  }
-
-  set {
-    name  = "vpcId"
-    value = module.vpc.vpc_id
-  }
+  set { name = "clusterName"; value = module.eks.cluster_name }
+  set { name = "serviceAccount.create"; value = "true" }
+  set { name = "serviceAccount.name"; value = "aws-load-balancer-controller" }
+  set { name = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"; value = aws_iam_role.aws_load_balancer_controller.arn }
+  set { name = "region"; value = var.aws_region }
+  set { name = "vpcId"; value = module.vpc.vpc_id }
 }

@@ -1,156 +1,68 @@
-name: CI/CD Deploy AWS EKS via Terraform
+name: CI/CD Pipeline - GestionMotPasse
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch: {}
 
 jobs:
-  # ==========================================================
-  # 1. JOB : TESTS UNITAIRES DU BACKEND
-  # ==========================================================
+  # 1. TESTS UNITAIRES
   backend-unit-tests:
-    name: Backend Unit Tests
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - name: Run backend unit tests
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { java-version: '17', distribution: 'temurin' }
+      - run: mvn -B test
         working-directory: backend
-        run: mvn -B test
 
-  # ==========================================================
-  # 2. JOB : TESTS UNITAIRES DU FRONTEND
-  # ==========================================================
   frontend-unit-tests:
-    name: Frontend Unit Tests
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install frontend dependencies
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npm ci && npm test
         working-directory: frontend
-        run: npm ci
 
-      - name: Run frontend unit tests
-        working-directory: frontend
-        run: npm test
-
-  # ==========================================================
-  # 3. JOB UNIQUE : TERRAFORM + BUILD/PUSH + DEPLOY
-  # ==========================================================
-  delivery-and-deployment:
-    name: AWS Infrastructure & Application Deployment
-    needs:
-      - backend-unit-tests
-      - frontend-unit-tests
+  # 2. INFRASTRUCTURE (Terraform)
+  terraform:
+    needs: [backend-unit-tests, frontend-unit-tests]
     runs-on: ubuntu-latest
-    environment: production
+    outputs:
+      backend_url: ${{ steps.outputs.outputs.BACKEND_URL }}
+      cluster_name: ${{ steps.outputs.outputs.CLUSTER_NAME }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v3
-        with:
-          aws-region: ${{ secrets.AWS_REGION }}
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.7.0
-          terraform_wrapper: false
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Install kubectl
-        run: |
-          curl -LO "https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
-
-      - name: Terraform Init & Apply
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v3
+        with: { aws-region: ${{ secrets.AWS_REGION }}, aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}, aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }} }
+      - name: Terraform Apply
         working-directory: terraform
-        env:
-          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          AWS_EC2_METADATA_DISABLED: "true"
         run: |
-          terraform init -input=false -reconfigure \
-            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-            -backend-config="key=${{ secrets.TF_STATE_KEY }}" \
-            -backend-config="dynamodb_table=${{ secrets.TF_STATE_DYNAMODB_TABLE }}"
-          terraform validate
+          terraform init -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" -backend-config="key=${{ secrets.TF_STATE_KEY }}" -backend-config="dynamodb_table=${{ secrets.TF_STATE_DYNAMODB_TABLE }}"
           terraform apply -auto-approve
-
-      # Extraction des variables d'environnement locales en direct du State
-      - name: Load Infrastructure Context
-        id: infra
-        working-directory: terraform
-        run: |
           echo "BACKEND_URL=$(terraform output -raw backend_repository_url)" >> $GITHUB_ENV
-          echo "FRONTEND_URL=$(terraform output -raw frontend_repository_url)" >> $GITHUB_ENV
           echo "CLUSTER_NAME=$(terraform output -raw cluster_name)" >> $GITHUB_ENV
 
-      - name: Login to Amazon ECR
-        id: login-ecr
+  # 3. BUILD & DEPLOY
+  deploy:
+    needs: [terraform]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v3
+        with: { aws-region: ${{ secrets.AWS_REGION }}, aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}, aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }} }
+
+      - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and Push Applications to ECR
+      - name: Build and Push
         run: |
-          # Build & Push Backend
-          docker build -t ${{ env.BACKEND_URL }}:latest -t ${{ env.BACKEND_URL }}:${{ github.sha }} ./backend
-          docker push ${{ env.BACKEND_URL }}:latest
+          docker build -t ${{ env.BACKEND_URL }}:${{ github.sha }} ./backend
           docker push ${{ env.BACKEND_URL }}:${{ github.sha }}
-          
-          # Build & Push Frontend
-          docker build -t ${{ env.FRONTEND_URL }}:latest -t ${{ env.FRONTEND_URL }}:${{ github.sha }} ./frontend
-          docker push ${{ env.FRONTEND_URL }}:latest
-          docker push ${{ env.FRONTEND_URL }}:${{ github.sha }}
 
-      - name: Configure kubectl Context
+      - name: Deploy to EKS
         run: |
-          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name "${{ env.CLUSTER_NAME }}"
-
-      - name: Create Kubernetes Secrets & Namespaces
-        run: |
-          kubectl create namespace gestionmotpasse --dry-run=client -o yaml | kubectl apply -f -
-          kubectl create secret generic postgres-secret \
-            --from-literal=postgres-username="${{ secrets.POSTGRES_USERNAME }}" \
-            --from-literal=postgres-password="${{ secrets.POSTGRES_PASSWORD }}" \
-            --from-literal=jwt-secret="${{ secrets.JWT_SECRET }}" \
-            --from-literal=encryption-key="${{ secrets.ENCRYPTION_KEY }}" \
-            -n gestionmotpasse --dry-run=client -o yaml | kubectl apply -f -
-
-      # CORRECTION : Remplacement du rollout status strict par un déploiement asynchrone suivi d'un diagnostic
-      - name: Deploy Manifests to EKS Cluster
-        run: |
-          kubectl apply -k ./k8s
-          kubectl set image deployment/backend backend="${{ env.BACKEND_URL }}:${{ github.sha }}" -n gestionmotpasse
-          kubectl set image deployment/frontend frontend="${{ env.FRONTEND_URL }}:${{ github.sha }}" -n gestionmotpasse
-          
-          echo "==> Envoi des manifests terminé. Attente de 15s pour le premier cycle d'initialisation..."
-          sleep 15
-          
-          echo "==> ÉTAT DES PODS (Namespace: gestionmotpasse) <=="
-          kubectl get pods -n gestionmotpasse
-          
-          echo "==> LOGS DU DEPLOYMENT BACKEND (Aperçu) <=="
-          kubectl logs deployment/backend -n gestionmotpasse --tail=30 || true
+          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+          kubectl set image deployment/backend backend=${{ env.BACKEND_URL }}:${{ github.sha }} -n gestionmotpasse
+          kubectl rollout status deployment/backend -n gestionmotpasse --timeout=120s
