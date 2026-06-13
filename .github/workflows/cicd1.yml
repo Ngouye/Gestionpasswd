@@ -82,8 +82,11 @@ jobs:
 
       - name: Terraform init and validate
         working-directory: terraform
+        env:
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
-          terraform init -input=false \
+          terraform init -input=false -reconfigure \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="key=${{ secrets.TF_STATE_KEY }}" \
             -backend-config="region=${{ secrets.AWS_REGION }}" \
