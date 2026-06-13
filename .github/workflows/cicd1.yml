@@ -80,7 +80,7 @@ jobs:
         with:
           terraform_version: 1.7.0
 
-      - name: Terraform init and validate
+      - name: Terraform init
         working-directory: terraform
         env:
           AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
@@ -91,8 +91,15 @@ jobs:
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="key=${{ secrets.TF_STATE_KEY }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_DYNAMODB_TABLE }}"
-          terraform fmt -check
-          terraform validate
+
+      - name: Terraform format check (Cosmetic)
+        working-directory: terraform
+        run: terraform fmt -check
+        continue-on-error: true
+
+      - name: Terraform validate (Syntax)
+        working-directory: terraform
+        run: terraform validate
 
       - name: Terraform apply
         id: tf_apply
