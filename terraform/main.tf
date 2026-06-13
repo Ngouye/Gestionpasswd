@@ -46,7 +46,7 @@ module "vpc" {
 }
 
 # ==========================================================
-# CLUSTER : EKS (VERSION v19.x ALIGNÉE)
+# CLUSTER : EKS
 # ==========================================================
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
@@ -55,12 +55,11 @@ module "eks" {
   cluster_name    = var.cluster_name
   cluster_version = "1.29"
   vpc_id          = module.vpc.vpc_id
-  subnet_ids      = module.vpc.private_subnets # Corrigé: subnets -> subnet_ids
+  subnet_ids      = module.vpc.private_subnets
 
-  enable_irsa                    = true # Corrigé: create_oidc_provider -> enable_irsa
+  enable_irsa                    = true
   cluster_endpoint_public_access = true
 
-  # Corrigé: node_groups -> eks_managed_node_groups avec arguments v19+
   eks_managed_node_groups = {
     default = {
       desired_size   = var.node_group_desired_capacity
@@ -80,17 +79,35 @@ module "eks" {
 }
 
 # ==========================================================
-# ACCÈS CLUSTER & PROVIDERS
+# CONFIGURATION DES PROVIDERS (CORRIGÉE VIA OUTPUTS DU MODULE)
 # ==========================================================
-data "aws_eks_cluster" "cluster" {
-  name = module.eks.cluster_name # Corrigé: cluster_id -> cluster_name
+provider "kubernetes" {
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+
+  # On utilise l'exécutable aws-cli pour générer un token dynamique robuste à la volée
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+    command     = "aws"
+  }
 }
 
-data "aws_eks_cluster_auth" "cluster" {
-  name = module.eks.cluster_name # Corrigé: cluster_id -> cluster_name
+provider "helm" {
+  kubernetes {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+      command     = "aws"
+    }
+  }
 }
 
-# Rôle IAM de substitution pour le AWS Load Balancer Controller (IRSA)
+# ==========================================================
+# RÔLE IAM (IRSA) POUR AWS LOAD BALANCER CONTROLLER
+# ==========================================================
 data "aws_iam_policy_document" "lb_controller_assume_role" {
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -114,8 +131,6 @@ resource "aws_iam_role" "aws_load_balancer_controller" {
   assume_role_policy = data.aws_iam_policy_document.lb_controller_assume_role.json
 }
 
-# Note: Pensez à attacher la politique AWSLoadBalancerControllerIAMPolicy à ce rôle si nécessaire
-
 # ==========================================================
 # DEPLOYMENT HELM : AWS LOAD BALANCER CONTROLLER
 # ==========================================================
@@ -130,12 +145,12 @@ resource "helm_release" "aws_load_balancer_controller" {
 
   set {
     name  = "clusterName"
-    value = module.eks.cluster_name # Corrigé: cluster_id -> cluster_name
+    value = module.eks.cluster_name
   }
 
   set {
     name  = "serviceAccount.create"
-    value = "true" # Modifié à true pour qu'Helm l'associe proprement au rôle annoté ci-dessous
+    value = "true"
   }
 
   set {
@@ -156,21 +171,5 @@ resource "helm_release" "aws_load_balancer_controller" {
   set {
     name  = "vpcId"
     value = module.vpc.vpc_id
-  }
-}
-# ==========================================================
-# CONFIGURATION DES PROVIDERS POUR S'AUTHENTIFIER SUR EKS
-# ==========================================================
-provider "kubernetes" {
-  host                   = data.aws_eks_cluster.cluster.endpoint
-  cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority[0].data)
-  token                  = data.aws_eks_cluster_auth.cluster.token
-}
-
-provider "helm" {
-  kubernetes {
-    host                   = data.aws_eks_cluster.cluster.endpoint
-    cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority[0].data)
-    token                  = data.aws_eks_cluster_auth.cluster.token
   }
 }
