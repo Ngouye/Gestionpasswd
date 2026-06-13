@@ -1,6 +1,7 @@
 output "cluster_name" {
   description = "EKS cluster name."
-  value       = module.eks.cluster_id
+  # CORRECTION : Utilisation de cluster_name à la place de cluster_id
+  value       = module.eks.cluster_name
 }
 
 output "cluster_endpoint" {
@@ -20,5 +21,5 @@ output "backend_repository_url" {
 
 output "frontend_repository_url" {
   description = "ECR repository URL for the frontend image."
-  value       = aws_ecr_repository.frontend.repository_url
+  value       = aws_ecr_repository.frontend.frontend_repository_url
 }
