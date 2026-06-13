@@ -1,11 +1,8 @@
 terraform {
   backend "s3" {
-    # Terraform backend configuration is provided at init time.
-    # Example:
-    # terraform init \
-    #   -backend-config="bucket=<bucket-name>" \
-    #   -backend-config="key=<path>/gestionmotpasse.tfstate" \
-    #   -backend-config="region=<aws-region>" \
-    #   -backend-config="dynamodb_table=<dynamodb-table>"
+    # On garde les accolades vides pour l'injection dynamique
+    # mais on ajoute ces deux options de contournement des redirections AWS
+    sts_region                 = "eu-north-1"
+    skip_region_validation     = true
   }
 }
