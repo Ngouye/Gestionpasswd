@@ -79,6 +79,8 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.7.0
+          # CORRECTION CRUCIALE : Désactive le wrapper pour que 'terraform output -raw' renvoie du texte brut exploitable
+          terraform_wrapper: false
 
       - name: Terraform init
         working-directory: terraform
@@ -148,23 +150,19 @@ jobs:
           echo "backend_image=$BACKEND_IMAGE" >> $GITHUB_OUTPUT
           echo "frontend_image=$FRONTEND_IMAGE" >> $GITHUB_OUTPUT
 
+      # CORRECTION CRUCIALE : Utilisation de l'action officielle d'AWS pour une connexion Docker fiable
       - name: Login to Amazon ECR
-        run: |
-          BACKEND_REGISTRY=$(echo "${{ needs.terraform-apply.outputs.backend_repository_url }}" | cut -d'/' -f1)
-          FRONTEND_REGISTRY=$(echo "${{ needs.terraform-apply.outputs.frontend_repository_url }}" | cut -d'/' -f1)
-          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin "$BACKEND_REGISTRY"
-          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin "$FRONTEND_REGISTRY"
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push backend image
         run: |
-          docker build -t backend-image ./backend
-          docker tag backend-image "${{ needs.terraform-apply.outputs.backend_repository_url }}:latest"
+          docker build -t "${{ needs.terraform-apply.outputs.backend_repository_url }}:latest" ./backend
           docker push "${{ needs.terraform-apply.outputs.backend_repository_url }}:latest"
 
       - name: Build and push frontend image
         run: |
-          docker build -t frontend-image ./frontend
-          docker tag frontend-image "${{ needs.terraform-apply.outputs.frontend_repository_url }}:latest"
+          docker build -t "${{ needs.terraform-apply.outputs.frontend_repository_url }}:latest" ./frontend
           docker push "${{ needs.terraform-apply.outputs.frontend_repository_url }}:latest"
 
   # ==========================================================
